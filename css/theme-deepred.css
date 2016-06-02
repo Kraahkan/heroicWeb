@@ -38,6 +38,7 @@
 /**! 1. Reset **/
 
 #HW_badge_cont {
+  height: -20;
 position: absolute !important;
 }
 
