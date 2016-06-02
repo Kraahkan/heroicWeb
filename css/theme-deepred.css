@@ -38,7 +38,8 @@
 /**! 1. Reset **/
 
 #HW_badge_cont {
-  height: -20 !important;
+  position: 'relative' !important;
+    top: '-15px' !important;
 position: absolute !important;
 }
 
