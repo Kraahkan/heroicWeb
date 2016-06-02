@@ -37,7 +37,7 @@
 /**!**************/
 /**! 1. Reset **/
 
-#HW_badge_cont {
+#HW_badge {
   position: 'relative' !important;
     top: '-15px' !important;
 position: absolute !important;
