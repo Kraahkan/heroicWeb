@@ -3,24 +3,24 @@ var mr = (function ($, window, document){
     "use strict";
 
     var mr         = {},
-        components = {documentReady: [], windowLoad: []};
+        components = {documentReady: [],documentReadyDeferred: [], windowLoad: [], windowLoadDeferred: []};
 
 
     $(document).ready(documentReady);
-    $(window).load(windowLoad);
+    $(window).on("load", windowLoad);
 
     function documentReady(context){
         
-        context = typeof context == typeof undefined ? $ : context;
-        components.documentReady.forEach(function(component){
+        context = typeof context === typeof undefined ? $ : context;
+        components.documentReady.concat(components.documentReadyDeferred).forEach(function(component){
             component(context);
         });
     }
 
     function windowLoad(context){
         
-        context = typeof context == "object" ? $ : context;
-        components.windowLoad.forEach(function(component){
+        context = typeof context === "object" ? $ : context;
+        components.windowLoad.concat(components.windowLoadDeferred).forEach(function(component){
            component(context);
         });
     }
@@ -59,8 +59,16 @@ mr = (function (mr, $, window, document){
         $('.update-year').text(year);
     };
 
+    mr.util.windowLoad = function($){
+        $('[data-delay-src]').each(function(){
+            var $el = $(this);
+            $el.attr('src', $el.attr('data-delay-src'));
+            $el.removeAttr('data-delay-src');
+        });
+    };
+
     mr.util.getURLParameter = function(name) {
-        return decodeURIComponent((new RegExp('[?|&]' + name + '=' + '([^&;]+?)(&|#|;|$)').exec(location.search) || [, ""])[1].replace(/\+/g, '%20')) || null;
+        return decodeURIComponent((new RegExp('[?|&]' + name + '=' + '([^&;]+?)(&|#|;|$)').exec(location.search) || [undefined, ""])[1].replace(/\+/g, '%20')) || null;
     };
 
 
@@ -68,6 +76,39 @@ mr = (function (mr, $, window, document){
         return string.charAt(0).toUpperCase() + string.slice(1);
     };
 
+    mr.util.slugify = function(text, spacesOnly){
+        if(typeof spacesOnly !== typeof undefined){
+            return text.replace(/ +/g, '');
+        }else{
+            return text
+                .toLowerCase()
+                .replace(/[\~\!\@\#\$\%\^\&\*\(\)\-\_\=\+\]\[\}\{\'\"\;\\\:\?\/\>\<\.\,]+/g, '')
+                .replace(/ +/g, '-');
+        }
+    };
+
+    mr.util.sortChildrenByText = function(parentElement, reverse){
+        var $parentElement = $(parentElement);
+        var items          = $parentElement.children().get();
+        var order          = -1;
+        var order2         = 1;
+        if(typeof reverse !== typeof undefined){order = 1; order2 = -1;}
+
+        items.sort(function(a,b){
+          var keyA = $(a).text();
+          var keyB = $(b).text();
+
+          if (keyA < keyB) return order;
+          if (keyA > keyB) return order2;
+          return 0;
+        });
+        
+        // Append back into place
+        $parentElement.empty();
+        $(items).each(function(i, itm){
+          $parentElement.append(itm);
+        });
+    };
     
     // Set data-src attribute of element from src to be restored later
     mr.util.idleSrc = function(context, selector){
@@ -117,39 +158,100 @@ mr = (function (mr, $, window, document){
         });
     };
 
+    // Take a text value in either px (eg. 150px) or vh (eg. 65vh) and return a number in pixels.
+    mr.util.parsePixels = function(text){
+        var windowHeight = $(window).height(), value;
+        
+        // Text text against regular expression for px value.
+        if(/^[1-9]{1}[0-9]*[p][x]$/.test(text)){
+            return parseInt(text.replace('px', ''),10);
+        }
+        // Otherwise it is vh value.
+        else if(/^[1-9]{1}[0-9]*[v][h]$/.test(text)){
+            value = parseInt(text.replace('vh', ''),10);
+            // Return conversion to percentage of window height.
+            return windowHeight * (value/100);
+        }else{
+            // If it is not proper text, return -1 to indicate bad value.
+            return -1;
+        }
+    };
+
     mr.components.documentReady.push(mr.util.documentReady);
+    mr.components.windowLoad.push(mr.util.windowLoad);
     return mr;
 
 }(mr, jQuery, window, document));
+
+//////////////// Window Functions
+mr = (function (mr, $, window, document){
+    "use strict";
+
+    mr.window = {};
+    mr.window.height = $(window).height();
+    mr.window.width = $(window).width();
+
+    $(window).on('resize',function(){
+        mr.window.height = $(window).height();
+        mr.window.width = $(window).width();
+    });
+
+    return mr;
+}(mr, jQuery, window, document));
+
 
 //////////////// Scroll Functions
 mr = (function (mr, $, window, document){
     "use strict";
 
+    
     mr.scroll           = {};
+    var raf             = window.requestAnimationFrame || 
+                          window.mozRequestAnimationFrame || 
+                          window.webkitRequestAnimationFrame ||
+                          window.msRequestAnimationFrame;
     mr.scroll.listeners = [];
+    mr.scroll.busy      = false;
     mr.scroll.y         = 0;
     mr.scroll.x         = 0;
-
+    
     var documentReady = function($){
-        
+
         //////////////// Capture Scroll Event and fire scroll function
-        
-        addEventListener('scroll', function(evt) {
-            mr.util.requestAnimationFrame.call(window, mr.scroll.update);
-        }, false);
+        jQuery(window).off('scroll.mr');    
+        jQuery(window).on('scroll.mr', function(evt) {
+                if(mr.scroll.busy === false){
+                    
+                    mr.scroll.busy = true;
+                    raf(function(evt){  
+                        mr.scroll.update(evt);
+                    });
+                    
+                }
+                if(evt.stopPropagation){
+                    evt.stopPropagation();
+                }
+        });
         
     };
 
-    mr.scroll.update = function(){
-    
-        mr.scroll.y = window.pageYOffset;
-        mr.scroll.x = window.pageXOffset;
- 
+    mr.scroll.update = function(event){
+        
         // Loop through all mr scroll listeners
-        for (var i = 0, l = mr.scroll.listeners.length; i < l; i++) {
-           mr.scroll.listeners[i]();
+        var parallax = typeof window.mr_parallax !== typeof undefined ? true : false;
+        mr.scroll.y = (parallax ? mr_parallax.mr_getScrollPosition() : window.pageYOffset);
+        mr.scroll.busy = false;
+        if(parallax){
+            mr_parallax.mr_parallaxBackground();
         }
+
+
+        if(mr.scroll.listeners.length > 0){
+            for (var i = 0, l = mr.scroll.listeners.length; i < l; i++) {
+               mr.scroll.listeners[i](event);
+            }
+        }
+        
     };
 
     mr.scroll.documentReady = documentReady;
@@ -161,25 +263,126 @@ mr = (function (mr, $, window, document){
 }(mr, jQuery, window, document));
 
 
+//////////////// Scroll Class Modifier
+mr = (function (mr, $, window, document){
+    "use strict";
+
+    mr.scroll.classModifiers = {};
+    // Globally accessible list of elements/rules
+    mr.scroll.classModifiers.rules = [];
+
+    mr.scroll.classModifiers.parseScrollRules = function(element){
+        var text  = element.attr('data-scroll-class'),
+            rules = text.split(";");
+
+        rules.forEach(function(rule){
+            var ruleComponents, scrollPoint, ruleObject = {};
+            ruleComponents = rule.replace(/\s/g, "").split(':');
+            if(ruleComponents.length === 2){
+                scrollPoint = mr.util.parsePixels(ruleComponents[0]);
+                if(scrollPoint > -1){
+                    ruleObject.scrollPoint = scrollPoint;
+                    if(ruleComponents[1].length){
+                        var toggleClass = ruleComponents[1];
+                        ruleObject.toggleClass = toggleClass;
+                        // Set variable in object to indicate that element already has class applied
+                        ruleObject.hasClass = element.hasClass(toggleClass);
+                        ruleObject.element = element.get(0);
+                        mr.scroll.classModifiers.rules.push(ruleObject);
+                    }else{
+                        // Error: toggleClass component does not exist.
+                        //console.log('Error - toggle class not found.');
+                        return false;
+                    }
+                }else{
+                    // Error: scrollpoint component was malformed
+                    //console.log('Error - Scrollpoint not found.');
+                    return false;
+                }
+            }   
+        });
+        
+        if(mr.scroll.classModifiers.rules.length){
+            return true;
+        }else{
+            return false;
+        }
+    };
+
+    mr.scroll.classModifiers.update = function(event){
+        var currentScroll = mr.scroll.y,
+            scrollRules   = mr.scroll.classModifiers.rules,
+            l             = scrollRules.length,
+            currentRule;
+        
+        // Given the current scrollPoint, check for necessary changes 
+        while(l--) {
+            
+            currentRule = scrollRules[l];
+            
+            if(currentScroll > currentRule.scrollPoint && !currentRule.hasClass){
+                // Set local copy and glogal copy at the same time;
+                currentRule.element.classList.add(currentRule.toggleClass);
+                currentRule.hasClass = mr.scroll.classModifiers.rules[l].hasClass = true;
+            }
+            if(currentScroll < currentRule.scrollPoint && currentRule.hasClass){
+                // Set local copy and glogal copy at the same time;
+                currentRule.element.classList.remove(currentRule.toggleClass);
+                currentRule.hasClass = mr.scroll.classModifiers.rules[l].hasClass = false;
+            }
+        }
+    };
+
+    var fixedElementSizes = function(){
+        $('.main-container [data-scroll-class*="pos-fixed"]').each(function(){
+            var element = $(this);
+            element.css('max-width',element.parent().outerWidth());
+            element.parent().css('min-height',element.outerHeight());
+        });
+    };
+
+    var documentReady = function($){
+        // Collect info on all elements that require class modification at load time
+        // Each element has data-scroll-class with a formatted value to represent class to add/remove at a particular scroll point.
+        $('[data-scroll-class]').each(function(){
+            var element  = $(this);
+                
+            // Test the rules to be added to an array of rules.
+            if(!mr.scroll.classModifiers.parseScrollRules(element)){
+                console.log('Error parsing scroll rules on: '+element);
+            }
+        });
+
+        // For 'position fixed' elements, give them a max-width for correct fixing behaviour
+        fixedElementSizes();
+        $(window).on('resize', fixedElementSizes);
+        
+        // If there are valid scroll rules add classModifiers update function to the scroll event processing queue.
+        if(mr.scroll.classModifiers.rules.length){
+            mr.scroll.listeners.push(mr.scroll.classModifiers.update);
+        }
+    };
+
+    mr.components.documentReady.push(documentReady);
+    mr.scroll.classModifiers.documentReady = documentReady;    
+
+    
+
+    return mr;
+
+}(mr, jQuery, window, document));
+
+
 //////////////// Accordions
 mr = (function (mr, $, window, document){
     "use strict";
+
+    mr.accordions = {};
+
     
-    var documentReady = function($){
+    mr.accordions.documentReady = function($){
         $('.accordion__title').on('click', function(){
-            var accordion = $(this).closest('.accordion');
-            var li = $(this).closest('li');
-            if(li.hasClass('active')){
-                li.removeClass('active');      
-            }else{
-                if(accordion.hasClass('accordion--oneopen')){
-                    var wasActive = accordion.find('li.active');
-                    wasActive.removeClass('active');
-                    li.addClass('active');
-                }else{
-                    li.addClass('active');
-                }
-            }
+            mr.accordions.activatePanel($(this));
         });
 
         $('.accordion').each(function(){
@@ -187,9 +390,81 @@ mr = (function (mr, $, window, document){
             var minHeight = accordion.outerHeight(true);
             accordion.css('min-height',minHeight);
         });
+
+        if(window.location.hash !== ''){
+             mr.accordions.activatePanelById(window.location.hash, true);
+        }
+
+        $('a[href^="#"]').on('click', function(){
+             mr.accordions.activatePanelById($(this).attr('href'), true);
+        });
     };
 
-    mr.accordions = {
+    
+
+    mr.accordions.activatePanel = function(panel, forceOpen){
+        var $panel    = $(panel),
+            accordion = $panel.closest('.accordion'),
+            li        = $panel.closest('li'),
+            openEvent = document.createEvent('Event'),
+            closeEvent = document.createEvent('Event');
+            
+            openEvent.initEvent('panelOpened.accordions.mr', true, true);
+            closeEvent.initEvent('panelClosed.accordions.mr', true, true);
+        
+        if(li.hasClass('active')){
+            if(forceOpen !== true){
+                li.removeClass('active');
+                $panel.trigger('panelClosed.accordions.mr').get(0).dispatchEvent(closeEvent);
+            }
+        }else{
+            if(accordion.hasClass('accordion--oneopen')){
+                var wasActive = accordion.find('li.active');
+                wasActive.removeClass('active');
+                wasActive.trigger('panelClosed.accordions.mr').get(0).dispatchEvent(closeEvent);
+                li.addClass('active');
+                li.trigger('panelOpened.accordions.mr').get(0).dispatchEvent(openEvent);
+                
+            }else{
+                if(!li.is('.active')){
+                    li.trigger('panelOpened.accordions.mr').get(0).dispatchEvent(openEvent);
+                }
+                li.addClass('active');
+            }
+        }
+    }
+
+    mr.accordions.activatePanelById = function(id, forceOpen){
+        var panel;
+
+        if(id !== '' && id !== '#'){
+            panel = $('.accordion > li > .accordion__title#'+id.replace('#', ''));
+            if(panel.length){
+                $('html, body').stop(true).animate({
+                    scrollTop: (panel.offset().top - 50)
+                }, 1200);
+                mr.accordions.activatePanel(panel, forceOpen);
+            }
+        }
+    };
+
+    mr.components.documentReady.push(mr.accordions.documentReady);
+    return mr;
+
+}(mr, jQuery, window, document));
+
+
+//////////////// Alerts
+mr = (function (mr, $, window, document){
+    "use strict";
+    
+    var documentReady = function($){
+        $('.alert__close').on('click touchstart', function(){
+            jQuery(this).closest('.alert').addClass('alert--dismissed');
+        });
+    };
+
+    mr.alerts = {
         documentReady : documentReady        
     };
 
@@ -214,6 +489,27 @@ mr = (function (mr, $, window, document){
     };
 
     mr.backgrounds = {
+        documentReady : documentReady        
+    };
+
+    mr.components.documentReady.push(documentReady);
+    return mr;
+
+}(mr, jQuery, window, document));
+
+//////////////// Bars
+mr = (function (mr, $, window, document){
+    "use strict";
+    
+    var documentReady = function($){
+        $('.nav-container .bar[data-scroll-class*="fixed"]:not(.bar--absolute)').each(function(){
+            var bar = $(this),
+                barHeight = bar.outerHeight(true);
+            bar.closest('.nav-container').css('min-height',barHeight);
+        });
+    };
+
+    mr.bars = {
         documentReady : documentReady        
     };
 
@@ -271,57 +567,338 @@ mr = (function (mr, $, window, document){
 
 }(mr, jQuery, window, document));
 
+//////////////// Countdown
+mr = (function (mr, $, window, document){
+    "use strict";
+    
+    var documentReady = function($){
+
+        $('.countdown[data-date]').each(function(){
+            var element      = $(this),
+                date         = element.attr('data-date'),
+                daysText     = "days",
+                fallback;
+
+            if(typeof element.attr('data-date-fallback') !== typeof undefined){
+                fallback = element.attr('data-date-fallback');
+            }
+
+            if(typeof element.attr('data-days-text') !== typeof undefined){
+                daysText = element.attr('data-days-text');
+            }
+
+            element.countdown(date, function(event) {
+                if(event.elapsed){
+                    element.text(fallback);
+                }else{
+                    element.text(
+                      event.strftime('%D '+daysText+' %H:%M:%S')
+                    );
+                }
+            });
+        });
+        
+    };
+
+    mr.countdown = {
+      documentReady : documentReady        
+    };
+
+    mr.components.documentReadyDeferred.push(documentReady);
+    return mr;
+
+}(mr, jQuery, window, document));
+
+//////////////// Datepicker
+mr = (function (mr, $, window, document){
+    "use strict";
+
+    var documentReady = function($){
+        if($('.datepicker').length){
+            $('.datepicker').pickadate();
+        }
+    };
+
+    mr.components.documentReadyDeferred.push(documentReady);
+    return mr;
+
+}(mr, jQuery, window, document));
+
+//////////////// Dropdowns
+mr = (function (mr, $, window, document){
+    "use strict";
+    mr.dropdowns = {};
+    mr.dropdowns.done = false;
+    
+    var documentReady = function($){
+
+        var rtl = false;
+
+        if($('html[dir="rtl"]').length){
+            rtl = true;
+        }
+
+        if(!mr.dropdowns.done){
+            jQuery(document).on('click','body:not(.dropdowns--hover) .dropdown:not(.dropdown--hover), body.dropdowns--hover .dropdown.dropdown--click',function(event){
+                var dropdown = jQuery(this);
+                if(jQuery(event.target).is('.dropdown--active > .dropdown__trigger')){
+                    dropdown.siblings().removeClass('dropdown--active').find('.dropdown').removeClass('dropdown--active');
+                    dropdown.toggleClass('dropdown--active');
+                }else{
+                    $('.dropdown--active').removeClass('dropdown--active');
+                    dropdown.addClass('dropdown--active');
+                }
+            });
+            jQuery(document).on('click touchstart', 'body:not(.dropdowns--hover)', function(event){
+                if(!jQuery(event.target).is('[class*="dropdown"], [class*="dropdown"] *')){
+                    $('.dropdown--active').removeClass('dropdown--active');
+                }
+            });
+            jQuery('body.dropdowns--hover .dropdown').on('click', function(event){
+                event.stopPropagation();
+                var hoverDropdown = jQuery(this);
+                hoverDropdown.toggleClass('dropdown--active');
+            });
+
+            // Append a container to the body for measuring purposes
+            jQuery('body').append('<div class="container containerMeasure" style="opacity:0;pointer-events:none;"></div>');
+
+            
+        
+
+            // Menu dropdown positioning
+            if(rtl === false){
+                repositionDropdowns($);
+                jQuery(window).on('resize', function(){repositionDropdowns($);});
+            }else{
+                repositionDropdownsRtl($);
+                jQuery(window).on('resize', function(){repositionDropdownsRtl($);});
+            }
+
+            mr.dropdowns.done = true;
+        }
+    };
+
+    function repositionDropdowns($){
+        $('.dropdown__container').each(function(){
+            var container, containerOffset, masterOffset, menuItem, content;
+
+                jQuery(this).css('left', '');
+
+                container       = jQuery(this);  
+                containerOffset = container.offset().left;
+                masterOffset    = jQuery('.containerMeasure').offset().left;
+                menuItem        = container.closest('.dropdown').offset().left;
+                content         = null;
+                
+                container.css('left',((-containerOffset)+(masterOffset)));
+
+                if(container.find('.dropdown__content:not([class*="md-12"])').length){
+                    content = container.find('.dropdown__content');
+                    content.css('left', ((menuItem)-(masterOffset)));
+                }
+                
+        });
+        $('.dropdown__content').each(function(){
+            var dropdown, offset, width, offsetRight, winWidth, leftCorrect;
+
+                dropdown    = jQuery(this);
+                offset      = dropdown.offset().left;
+                width       = dropdown.outerWidth(true);
+                offsetRight = offset + width;
+                winWidth    = jQuery(window).outerWidth(true);
+                leftCorrect = jQuery('.containerMeasure').outerWidth() - width;
+
+            if(offsetRight > winWidth){
+                dropdown.css('left', leftCorrect);
+            }
+
+        });
+    }
+
+    function repositionDropdownsRtl($){
+
+        var windowWidth = jQuery(window).width();
+
+        $('.dropdown__container').each(function(){
+            var container, containerOffset, masterOffset, menuItem, content;
+ 
+                jQuery(this).css('left', '');
+
+                container   = jQuery(this);
+                containerOffset = windowWidth - (container.offset().left + container.outerWidth(true));
+                masterOffset    = jQuery('.containerMeasure').offset().left;
+                menuItem        = windowWidth - (container.closest('.dropdown').offset().left + container.closest('.dropdown').outerWidth(true));
+                content         = null;
+                
+                container.css('right',((-containerOffset)+(masterOffset)));
+
+                if(container.find('.dropdown__content:not([class*="md-12"])').length){
+                    content = container.find('.dropdown__content');
+                    content.css('right', ((menuItem)-(masterOffset)));
+                }
+        });
+        $('.dropdown__content').each(function(){
+            var dropdown, offset, width, offsetRight, winWidth, rightCorrect;
+
+                dropdown    = jQuery(this);
+                offset      = windowWidth - (dropdown.offset().left + dropdown.outerWidth(true));
+                width       = dropdown.outerWidth(true);
+                offsetRight = offset + width;
+                winWidth    = jQuery(window).outerWidth(true);
+                rightCorrect = jQuery('.containerMeasure').outerWidth() - width;
+
+            if(offsetRight > winWidth){
+               dropdown.css('right', rightCorrect);
+            }
+
+        });
+    }
+
+    mr.dropdowns.documentReady = documentReady;
+    
+
+    mr.components.documentReady.push(documentReady);
+    return mr;
+
+}(mr, jQuery, window, document));
+
 //////////////// Forms
+
 mr = (function (mr, $, window, document){
     "use strict";
     
     mr.forms = {};
+    mr.forms.captcha         = {};
+    mr.forms.captcha.widgets = [];
+    mr.forms.captcha.done    = false;
 
     var documentReady = function($){
-        
-        //////////////// Checkbox Inputs
 
-        $('.input-checkbox').on('click', function() {
-            var checkbox = $(this);
-            checkbox.toggleClass('checked');
-            
-            var input = checkbox.find('input');
-            if (input.prop('checked') === false) {
-                input.prop('checked', true);
-            } else {
-                input.prop('checked', false);
+        mr.forms.captcha.widgets = [];
+
+        /// Checkbox & Radio Inputs
+
+        $('.input-checkbox input[type="checkbox"], .input-radio input[type="radio"]').each(function(index){
+            var input = $(this),
+                label = input.siblings('label'),
+                id    = "input-assigned-"+index;
+            if(typeof input.attr('id') === typeof undefined || input.attr('id') === ""){
+                input.attr('id',id);
+                label.attr('for',id);
+            }else{
+                id = input.attr('id');
+                label.attr('for',id);
             }
-            return false;
         });
 
-        //////////////// Radio Buttons
+        //////////////// Number Inputs
 
-        $('.input-radio').on('click', function() {
-            var radio = $(this);
-            radio.closest('form').find('.input-radio').removeClass('checked');
-            radio.addClass('checked').find('input').prop('checked', true);
-            return false;
+        $('.input-number__controls > span').off('click.mr').on('click.mr',function(){
+            var control = jQuery(this),
+                parent   = control.closest('.input-number'),
+                input    = parent.find('input[type="number"]'),
+                max      = input.attr('max'),
+                min      = input.attr('min'),
+                step     = 1,
+                current  = parseInt(input.attr('value'),10);
+
+            if(parent.is('[data-step]')){
+                step = parseInt(parent.attr('data-step'),10);
+            }
+
+            if(control.hasClass('input-number__increase')){
+                if((current+step) <= max){
+                    input.attr('value',current+step);
+                }
+            }else{
+                if((current-step) >= min){
+                    input.attr('value',current-step);
+                }
+            }
         });
+
 
         //////////////// File Uploads
 
-        $('.input-file .btn').on('click',function(){
+        $('.input-file .btn').off('click.mr').on('click.mr',function(){
             $(this).siblings('input').trigger('click');
             return false;
         });
         
         //////////////// Handle Form Submit
 
-        $('form.form-email, form[action*="list-manage.com"], form[action*="createsend.com"]').attr('novalidate', true).unbind('submit').on('submit', mr.forms.submit);
+        $('form.form-email, form[action*="list-manage.com"], form[action*="createsend.com"]').attr('novalidate', true).off('submit').on('submit', mr.forms.submit);
 
         //////////////// Handle Form Submit
         $(document).on('change, input, paste, keyup', '.attempted-submit .field-error', function(){
             $(this).removeClass('field-error');
         });
 
+         //////////////// Check forms for Google reCaptcha site keys
+
+        $('form[data-recaptcha-sitekey]:not([data-recaptcha-sitekey=""])').each(function(){
+            var $thisForm    = jQuery(this),
+                $captchaDiv  = $thisForm.find('div.recaptcha'),
+                $insertBefore, $column, widgetObject,  $script, scriptSrc, widgetColourTheme, widgetSize;
+
+            widgetColourTheme = $thisForm.attr('data-recaptcha-theme');
+            widgetColourTheme = typeof widgetColourTheme !== typeof undefined ? widgetColourTheme : '';
+
+            widgetSize = $thisForm.attr('data-recaptcha-size');
+            widgetSize = typeof widgetSize !== typeof undefined ? widgetSize : '';
+
+            // Store the site key for later use
+            mr.forms.captcha.sitekey = $thisForm.attr('data-recaptcha-sitekey');
+
+            if($captchaDiv.length){
+                // If a div.recaptcha was already present on this form, do nothing at this stage,
+                // It will be populated with a captcha widget later.
+            }else{
+                // Create a captcha div and insert it before the submit button.
+                $insertBefore = $thisForm.find('button[type=submit]').closest('[class*="col-"]');
+                $captchaDiv   = jQuery('<div>').addClass('recaptcha');
+                $column       = jQuery('<div>').addClass('col-xs-12').append($captchaDiv);
+                $column.insertBefore($insertBefore);
+            }
+
+       
+            // Add the widget div to the widgets array
+            widgetObject = {
+                element:    $captchaDiv.get(0),
+                parentForm: $thisForm,
+                theme:      widgetColourTheme,
+                size:       widgetSize,
+            };
+
+          
+
+            mr.forms.captcha.widgets.push(widgetObject);
+
+            // mr.forms.captcha.done indicates whether the api script has been appended yet.
+            if(mr.forms.captcha.done === false){
+                if(!jQuery('script[src*="recaptcha/api.js"]').length){
+                    $script   = jQuery('<script async defer>');
+                    scriptSrc = 'https://www.google.com/recaptcha/api.js?onload=mrFormsCaptchaInit&render=explicit';
+                    $script.attr('src', scriptSrc);
+                    jQuery('body').append($script);
+                    mr.forms.captcha.done = true;
+                }
+            }else{
+                if(typeof grecaptcha !== typeof undefined){
+                    mr.forms.captcha.renderWidgets();    
+                }
+            }
+
+        });
+
+
     };
 
     mr.forms.documentReady = documentReady;
+
+   
+
     
     mr.forms.submit = function(e){
         // return false so form submits through jQuery rather than reloading page.
@@ -334,6 +911,7 @@ mr = (function (mr, $, window, document){
             submitButton  = thisForm.find('button[type="submit"], input[type="submit"]'),
             error         = 0,
             originalError = thisForm.attr('original-error'),
+            captchaUsed   = thisForm.find('div.recaptcha').length ? true:false,
             successRedirect, formError, formSuccess, errorText, successText;
 
         body.find('.form-error, .form-success').remove();
@@ -444,7 +1022,7 @@ mr = (function (mr, $, window, document){
                 jQuery.ajax({
                     type: "POST",
                     url: "mail/mail.php",
-                    data: thisForm.serialize()+"&url="+window.location.href,
+                    data: thisForm.serialize()+"&url="+window.location.href+"&captcha="+captchaUsed,
                     success: function(response) {
                         // Swiftmailer always sends back a number representing number of emails sent.
                         // If this is numeric (not Swift Mailer error text) AND greater than 0 then show success message.
@@ -462,6 +1040,7 @@ mr = (function (mr, $, window, document){
 
                                 mr.forms.resetForm(thisForm);
                                 mr.forms.showFormSuccess(formSuccess, formError, 1000, 5000, 500);
+                                mr.forms.captcha.resetWidgets();
                             }
                         }
                         // If error text was returned, put the text in the .form-error div and show it.
@@ -488,17 +1067,28 @@ mr = (function (mr, $, window, document){
     };
     
     mr.forms.validateFields = function(form) {
-        var body = $(body), name, error, originalErrorMessage;
+        var body = $(body),
+            error = false,
+            originalErrorMessage,
+            name,
+            thisElement;
 
-        $(form).find('.validate-required[type="checkbox"]').each(function() {
+            form = $(form);
+
+
+
+
+        form.find('.validate-required[type="checkbox"]').each(function() {
+            var checkbox = $(this);
             if (!$('[name="' + $(this).attr('name') + '"]:checked').length) {
                 error = 1;
-                name = $(this).attr('name').replace('[]', '');
-                body.find('.form-error').text('Please tick at least one ' + name + ' box.');
+                name = $(this).attr('data-name') ||  'check';
+                checkbox.parent().addClass('field-error');
+                //body.find('.form-error').text('Please tick at least one ' + name + ' box.');
             }
         });
 
-        $(form).find('.validate-required, .required, [required]').each(function() {
+        form.find('.validate-required, .required, [required]').not('input[type="checkbox"]').each(function() {
             if ($(this).val() === '') {
                 $(this).addClass('field-error');
                 error = 1;
@@ -507,7 +1097,7 @@ mr = (function (mr, $, window, document){
             }
         });
 
-        $(form).find('.validate-email, .email, [name*="cm-"][type="email"]').each(function() {
+        form.find('.validate-email, .email, [name*="cm-"][type="email"]').each(function() {
             if (!(/(.+)@(.+){2,}\.(.+){2,}/.test($(this).val()))) {
                 $(this).addClass('field-error');
                 error = 1;
@@ -515,6 +1105,27 @@ mr = (function (mr, $, window, document){
                 $(this).removeClass('field-error');
             }
         });
+
+        form.find('.validate-number-dash').each(function() {
+            if (!(/^[0-9][0-9-]+[0-9]$/.test($(this).val()))) {
+                $(this).addClass('field-error');
+                error = 1;
+            } else {
+                $(this).removeClass('field-error');
+            }
+        });
+
+        // Validate recaptcha
+        if(form.find('div.recaptcha').length && typeof form.attr('data-recaptcha-sitekey') !== typeof undefined){
+            thisElement = $(form.find('div.recaptcha'));
+    
+            if(grecaptcha.getResponse(form.data('recaptchaWidgetID')) !== ""){
+                thisElement.removeClass('field-error');
+            }else{
+                thisElement.addClass('field-error');
+                error = 1;
+            }
+        }
 
         if (!form.find('.field-error').length) {
             body.find('.form-error').fadeOut(1000);
@@ -528,6 +1139,8 @@ mr = (function (mr, $, window, document){
                 }, 1200, function(){firstError.focus();});
             }
         }
+
+
 
         return error;
     };
@@ -560,7 +1173,149 @@ mr = (function (mr, $, window, document){
 
     };
 
-    mr.components.documentReady.push(documentReady);
+    // Defined on the window scope as the recaptcha js api seems not to be able to call function in mr scope
+    window.mrFormsCaptchaInit = function(){
+        mr.forms.captcha.renderWidgets();
+    };
+
+    mr.forms.captcha.renderWidgets = function(){
+        mr.forms.captcha.widgets.forEach(function(widget){
+            if(widget.element.innerHTML === ''){
+                widget.id = grecaptcha.render(widget.element, {
+                    'sitekey' : mr.forms.captcha.sitekey,
+                    'theme' : widget.theme,
+                    'size' : widget.size,
+                    'callback' : mr.forms.captcha.setHuman
+                });
+                widget.parentForm.data('recaptchaWidgetID', widget.id);
+            }
+        });
+    };
+
+    mr.forms.captcha.resetWidgets = function(){
+        mr.forms.captcha.widgets.forEach(function(widget){
+            grecaptcha.reset(widget.id);
+        });
+    };
+
+    mr.forms.captcha.setHuman = function(){
+        jQuery('div.recaptcha.field-error').removeClass('field-error');
+    };
+
+    mr.components.documentReadyDeferred.push(documentReady);
+    return mr;
+
+}(mr, jQuery, window, document));
+
+//////////////// Granim
+mr = (function (mr, $, window, document){
+    "use strict";
+    
+    var documentReady = function($){
+    	$('[data-gradient-bg]').each(function(index,element){
+    		var granimParent = $(this),
+    			granimID 	 = 'granim-'+index+'',
+				colours 	 = granimParent.attr('data-gradient-bg'),
+				pairs        = [],
+				tempPair     = [],
+				count,
+				passes,
+				i;
+
+			// Canvas element forms the gradient background
+			granimParent.prepend('<canvas id="'+granimID+'"></canvas>');
+
+            // Regular expression to match comma separated list of hex colour values
+            passes = /^(#[0-9|a-f|A-F]{6}){1}([ ]*,[ ]*#[0-9|a-f|A-F]{6})*$/.test(colours);
+
+            if(passes === true){
+            	colours = colours.replace(' ','');
+            	colours = colours.split(',');
+            	count = colours.length;
+            	// If number of colours is odd - duplicate last colour to make even array
+            	if(count%2 !== 0){
+            		colours.push(colours[count-1]);
+            	}
+            	for(i = 0; i < (count/2); i++){
+                    tempPair = [];
+                    tempPair.push(colours.shift());
+                    tempPair.push(colours.shift());
+                    pairs.push(tempPair);
+            	}
+            }
+
+    		var granimElement = $(this);
+    		var granimInstance = new Granim({
+			    element: '#'+granimID,
+			    name: 'basic-gradient',
+			    direction: 'left-right',
+			    opacity: [1, 1],
+			    isPausedWhenNotInView: true,
+			    states : {
+			        "default-state": {
+			            gradients: pairs
+			        }
+			    }
+			});
+    	});        
+    };
+
+    mr.granim = {
+      documentReady : documentReady        
+    };
+
+    mr.components.documentReadyDeferred.push(documentReady);
+    return mr;
+
+}(mr, jQuery, window, document));
+
+//////////////// Instagram
+mr = (function (mr, $, window, document){
+    "use strict";
+    
+    var documentReady = function($){
+        
+        if($('.instafeed').length){
+
+            // Replace with your own Access Token and Client ID
+            var token  = '4079540202.b9b1d8a.1d13c245c68d4a17bfbff87919aaeb14',
+                client = 'b9b1d8ae049d4153b24a6332f0088686',
+                elementToken, elementClient;
+
+            if($('.instafeed[data-access-token][data-client-id]').length){
+                elementToken = $('.instafeed[data-access-token][data-client-id]').first().attr('data-access-token');
+                elementClient = $('.instafeed[data-access-token][data-client-id]').first().attr('data-client-id');
+
+                if(elementToken !== ""){token = elementToken;}
+                if(elementClient !== ""){client = elementClient;}
+            }
+
+            jQuery.fn.spectragram.accessData = {
+                accessToken: token,
+                clientID: client
+            };  
+        }
+
+        $('.instafeed').each(function(){
+            var feed   = $(this),
+                feedID = feed.attr('data-user-name'),
+                fetchNumber = 12;
+            if(typeof feed.attr('data-amount') !== typeof undefined){
+                fetchNumber = parseInt(feed.attr('data-amount'), 10);
+            }
+            feed.append('<ul></ul>');
+            feed.children('ul').spectragram('getUserFeed', {
+                query: feedID,
+                max: fetchNumber
+            });
+        });
+    };
+
+    mr.instagram = {
+        documentReady : documentReady        
+    };
+
+    mr.components.documentReadyDeferred.push(documentReady);
     return mr;
 
 }(mr, jQuery, window, document));
@@ -578,19 +1333,23 @@ mr = (function (mr, $, window, document){
             $(this).addClass('interact');
         }).removeClass('interact');
         
-        mr.maps.initAPI();
-        mr.maps.init();
+        var mapsOnPage = $('.map-container[data-maps-api-key]');
+        if(mapsOnPage.length){
+            mapsOnPage.addClass('gmaps-active');
+            mr.maps.initAPI($);
+            mr.maps.init();
+        }
         
     };
     mr.maps.documentReady = documentReady;
 
-    mr.maps.initAPI = function(){
+    mr.maps.initAPI = function($){
         // Load Google MAP API JS with callback to initialise when fully loaded
         if(document.querySelector('[data-maps-api-key]') && !document.querySelector('.gMapsAPI')){
             if($('[data-maps-api-key]').length){
                 var script = document.createElement('script');
                 var apiKey = $('[data-maps-api-key]:first').attr('data-maps-api-key');
-                apiKey = typeof apiKey != typeof undefined ? apiKey : ''; 
+                apiKey = typeof apiKey !== typeof undefined ? apiKey : ''; 
                 if(apiKey !== ''){
                     script.type = 'text/javascript';
                     script.src = 'https://maps.googleapis.com/maps/api/js?key='+apiKey+'&callback=mr.maps.init';
@@ -604,9 +1363,10 @@ mr = (function (mr, $, window, document){
     mr.maps.init = function(){
         if(typeof window.google !== "undefined"){
             if(typeof window.google.maps !== "undefined"){
-                $('.map-container[data-maps-api-key]').each(function(){
+                
+                jQuery('.gmaps-active').each(function(){
                     var mapElement    = this,
-                        mapInstance   = $(this),
+                        mapInstance   = jQuery(this),
                         mapJSON       = typeof mapInstance.attr('data-map-style') !== typeof undefined ? mapInstance.attr('data-map-style'): false,
                         mapStyle      = JSON.parse(mapJSON) || [{"featureType":"landscape","stylers":[{"saturation":-100},{"lightness":65},{"visibility":"on"}]},{"featureType":"poi","stylers":[{"saturation":-100},{"lightness":51},{"visibility":"simplified"}]},{"featureType":"road.highway","stylers":[{"saturation":-100},{"visibility":"simplified"}]},{"featureType":"road.arterial","stylers":[{"saturation":-100},{"lightness":30},{"visibility":"on"}]},{"featureType":"road.local","stylers":[{"saturation":-100},{"lightness":40},{"visibility":"on"}]},{"featureType":"transit","stylers":[{"saturation":-100},{"visibility":"simplified"}]},{"featureType":"administrative.province","stylers":[{"visibility":"off"}]},{"featureType":"water","elementType":"labels","stylers":[{"visibility":"on"},{"lightness":-25},{"saturation":-100}]},{"featureType":"water","elementType":"geometry","stylers":[{"hue":"#ffff00"},{"lightness":-25},{"saturation":-97}]}],
                         zoomLevel     = (typeof mapInstance.attr('data-map-zoom') !== typeof undefined && mapInstance.attr('data-map-zoom') !== "") ? mapInstance.attr('data-map-zoom') * 1: 17,
@@ -617,7 +1377,7 @@ mr = (function (mr, $, window, document){
                         address       = typeof mapInstance.attr('data-address') !== typeof undefined ? mapInstance.attr('data-address').split(';'): [""],
                         markerImage   = typeof mapInstance.attr('data-marker-image') !== typeof undefined ? mapInstance.attr('data-marker-image'): 'img/mapmarker.png',
                         markerTitle   = "We Are Here",
-                        isDraggable   = $(document).width() > 766 ? true : false,
+                        isDraggable   = jQuery(document).width() > 766 ? true : false,
                         map, marker,
                         mapOptions = {
                             draggable: isDraggable,
@@ -634,14 +1394,15 @@ mr = (function (mr, $, window, document){
 
                     if(address !== undefined && address[0] !== ""){
                             geocoder.geocode( { 'address': address[0].replace('[nomarker]','')}, function(results, status) {
-                                if (status == google.maps.GeocoderStatus.OK) {
+                                if (status === google.maps.GeocoderStatus.OK) {
                                 var map = new google.maps.Map(mapElement, mapOptions); 
                                 map.setCenter(results[0].geometry.location);
                                 
                                 address.forEach(function(address){
                                     var markerGeoCoder;
                                     
-                                    markerImage = {url: typeof window.mr_variant === typeof undefined ? markerImage : '../img/mapmarker.png', scaledSize: new google.maps.Size(50,50)};
+                                    markerImage = {url: typeof window.mr_variant === typeof undefined ? typeof markerImage !== "object" ? markerImage: markerImage.url : '../img/mapmarker.png', scaledSize: new google.maps.Size(50,50)};
+
                                     if(/(\-?\d+(\.\d+)?),\s*(\-?\d+(\.\d+)?)/.test(address) ){
                                         var latlong = address.split(','),
                                         marker = new google.maps.Marker({
@@ -663,6 +1424,9 @@ mr = (function (mr, $, window, document){
                                                     position: results[0].geometry.location,
                                                     optimised: false
                                                 });
+                                            }
+                                            else{
+                                                console.log('Map marker error: '+status);
                                             }
                                         });
                                     }
@@ -702,49 +1466,26 @@ mr = (function (mr, $, window, document){
     
     var documentReady = function($){
 
-        $('.masonry').each(function(){
-            var masonry = $(this);
-            var masonryContainer = masonry.find('.masonry__container'),
-                filters          = masonry.find('.masonry__filters'),
-                // data-filter-all-text can be used to set the word for "all"
-                filterAllText    = typeof filters.attr('data-filter-all-text') !== typeof undefined ? filters.attr('data-filter-all-text') : "All",
-                filtersList;
-            
-            // If a filterable masonry item exists
-            if(masonryContainer.find('.masonry__item[data-masonry-filter]').length){
-                
-                // Create empty ul for filters
-                filters.append('<ul></ul>');
-                filtersList = filters.find('> ul');
+        mr.masonry.updateFilters();
 
-                // Add a filter "all" option
-                filtersList.append('<li class="active" data-masonry-filter="*">'+filterAllText+'</li>');
-
-                // To avoid cases where user leave filter attribute blank
-                // only take items that have filter attribute
-                masonryContainer.find('.masonry__item[data-masonry-filter]').each(function(){
-                    var masonryItem  = $(this),
-                        filterString = masonryItem.attr('data-masonry-filter'),
-                        filtersArray = [];
-
-                    // If not undefined or empty
-                    if(typeof filterString !== typeof undefined && filterString !== ""){
-                        // Split tags from string into array 
-                        filtersArray = filterString.split(',');
-                    }
-                    jQuery(filtersArray).each(function(index, tag){
-                        // Add the filter class to the masonry item
-                        masonryItem.addClass('filter-'+tag);
-
-                        // If this tag does not appear in the list already, add it
-                        if(!filtersList.find('[data-masonry-filter="'+tag+'"]').length){
-                            filtersList.append('<li data-masonry-filter="'+tag+'">'+tag+'</li>');
-                            
-                        }
-                    }); 
-                });
+        $(document).on('click touchstart', '.masonry__filters li', function(){
+            var masonryFilter = $(this);
+            var masonryContainer = masonryFilter.closest('.masonry').find('.masonry__container');
+            var filterValue = '*';
+            if(masonryFilter.attr('data-masonry-filter') !== '*'){
+                filterValue = '.filter-'+masonryFilter.attr('data-masonry-filter');
             }
-            //End of "if filterable masonry item exists"
+            masonryFilter.siblings('li').removeClass('active');
+            masonryFilter.addClass('active');
+            masonryContainer.removeClass('masonry--animate');
+            masonryContainer.on('layoutComplete',function(){
+                $(this).addClass('masonry--active');
+                if(typeof mr_parallax !== typeof undefined){
+                    setTimeout(function(){ mr_parallax.profileParallaxElements(); },100);
+                }
+            });
+            masonryContainer.isotope({ filter: filterValue });
+            
         });
         
     };
@@ -752,37 +1493,134 @@ mr = (function (mr, $, window, document){
     var windowLoad = function(){
 
         $('.masonry').each(function(){
-            var masonry = $(this).find('.masonry__container');
+            var masonry       = $(this).find('.masonry__container'),
+                masonryParent = $(this),
+                defaultFilter = '*';
+
+            // Check for a default filter attribute
+            if(masonryParent.is('[data-default-filter]')){
+                defaultFilter = masonryParent.attr('data-default-filter').toLowerCase();
+                defaultFilter = '.filter-'+defaultFilter;
+                masonryParent.find('li[data-masonry-filter]').removeClass('active');
+                masonryParent.find('li[data-masonry-filter="'+masonryParent.attr("data-default-filter").toLowerCase()+'"]').addClass('active');
+            }
 
             masonry.on('layoutComplete',function(){
                 masonry.addClass('masonry--active');
+                if(typeof mr_parallax !== typeof undefined){
+                    setTimeout(function(){ mr_parallax.profileParallaxElements(); },100);
+                }
             });
 
             masonry.isotope({
               itemSelector: '.masonry__item',
+              filter: defaultFilter,
               masonry: {
                 columnWidth: '.masonry__item'
               }
             });
-        });
 
-        $('.masonry__filters li').on('click', function(){
-            var masonryFilter = $(this);
-            var masonryContainer = masonryFilter.closest('.masonry').find('.masonry__container');
-            var filterValue = '*';
-            if(masonryFilter.attr('data-masonry-filter') !== '*'){
-                filterValue = '.filter-'+masonryFilter.attr('data-masonry-filter');
-            }
-            $('.masonry__filters li').removeClass('active');
-            masonryFilter.addClass('active');
-            masonryContainer.removeClass('masonry--animate');
-            masonryContainer.isotope({ filter: filterValue });
         });
     };
 
+    
     mr.masonry = {
         documentReady : documentReady,
         windowLoad : windowLoad        
+    };
+
+    mr.masonry.updateFilters = function(masonry){
+
+        // If no argument is supplied, just apply the update to all masonry sets on the page.
+        masonry = typeof masonry !== typeof undefined ? masonry : '.masonry';
+        
+        var $masonry = $(masonry);
+        
+        $masonry.each(function(){
+            var $masonry         = $(this),
+                masonryContainer = $masonry.find('.masonry__container'),
+                filters          = $masonry.find('.masonry__filters'),
+                // data-filter-all-text can be used to set the word for "all"
+                filterAllText    = typeof filters.attr('data-filter-all-text') !== typeof undefined ? filters.attr('data-filter-all-text') : "All",
+                filtersList;
+            
+            // Ensure we are working with a .masonry element
+            if($masonry.is('.masonry')){
+                // If a filterable masonry item exists
+                if(masonryContainer.find('.masonry__item[data-masonry-filter]').length){
+                    
+                    // Create empty ul for filters
+                    filtersList = filters.find('> ul');
+
+                    if(!filtersList.length){
+                        filtersList = filters.append('<ul></ul>').find('> ul');
+                    }
+
+                    // To avoid cases where user leave filter attribute blank
+                    // only take items that have filter attribute
+                    masonryContainer.find('.masonry__item[data-masonry-filter]').each(function(){
+                        var masonryItem  = $(this),
+                            filterString = masonryItem.attr('data-masonry-filter'),
+                            filtersArray = [];
+
+                        // If not undefined or empty
+                        if(typeof filterString !== typeof undefined && filterString !== ""){
+                            // Split tags from string into array 
+                            filtersArray = filterString.split(',');
+                        }
+                        jQuery(filtersArray).each(function(index, tag){
+
+                            // Slugify the tag
+
+                            var slug = mr.util.slugify(tag);
+
+                            // Add the filter class to the masonry item
+
+                            masonryItem.addClass('filter-'+slug);
+
+                            // If this tag does not appear in the list already, add it
+                            if(!filtersList.find('[data-masonry-filter="'+slug+'"]').length){
+                                filtersList.append('<li data-masonry-filter="'+slug+'">'+tag+'</li>');
+                                
+                            }
+                        }); 
+                    });
+
+                    mr.util.sortChildrenByText($(this).find('.masonry__filters ul'));
+                    // Add a filter "all" option
+                    if(!filtersList.find('[data-masonry-filter="*"]').length){
+                        filtersList.prepend('<li class="active" data-masonry-filter="*">'+filterAllText+'</li>');
+                    }
+
+                }
+                //End of "if filterable masonry item exists"
+            }
+            //End of "if $masonry is .masonry"
+        });
+
+    };
+
+    mr.masonry.updateLayout = function(masonry){
+        
+        // If no argument is supplied, just apply the update to all masonry sets on the page.
+        masonry = typeof masonry !== typeof undefined ? masonry : '.masonry';
+
+        var $masonry = $(masonry);
+        
+
+        $masonry.each(function(){
+            var collection       = $(this),
+                newItems         = collection.find('.masonry__item:not([style])'),
+                masonryContainer = collection.find('.masonry__container');
+
+            if(collection.is('.masonry')){
+                if(newItems.length){
+                    masonryContainer.isotope('appended', newItems).isotope( 'layout');
+                }
+                
+                masonryContainer.isotope('layout');
+            }
+        });
     };
 
     mr.components.documentReady.push(documentReady);
@@ -791,6 +1629,7 @@ mr = (function (mr, $, window, document){
 
 }(mr, jQuery, window, document));
 
+
 //////////////// Modals
 mr = (function (mr, $, window, document){
     "use strict";
@@ -798,13 +1637,26 @@ mr = (function (mr, $, window, document){
     mr.modals = {};
 
     var documentReady = function($){
+        var allPageModals = "<div class=\"all-page-modals\"></div>",
+            mainContainer = $('div.main-container');
+
+        if(mainContainer.length){
+            jQuery(allPageModals).insertAfter(mainContainer);
+            mr.modals.allModalsContainer = $('div.all-page-modals');
+        }
+        else{
+            jQuery('body').append(allPageModals);
+            mr.modals.allModalsContainer = jQuery('body div.all-page-modals');
+        }
+
         $('.modal-container').each(function(){
 
             // Add modal close if none exists
 
-            var modal = $(this);
-            var $window = $(window);
-            var modalContent = modal.find('.modal-content');
+            var modal        = $(this),
+                $window      = $(window),
+                modalContent = modal.find('.modal-content');
+                
             
             if(!modal.find('.modal-close').length){
                 modal.find('.modal-content').append('<div class="modal-close modal-close-cross"></div>');
@@ -814,19 +1666,10 @@ mr = (function (mr, $, window, document){
             
             if(modalContent.attr('data-width') !== undefined){
                 var modalWidth = modalContent.attr('data-width').substr(0,modalContent.attr('data-width').indexOf('%')) * 1;
-                if($window.width()<1280 && $window.width()>990){
-                    modalWidth = modalWidth + 15;  
-                }else if($window.width()<990){
-                    modalWidth = modalWidth + 20;  
-                }
                 modalContent.css('width',modalWidth + '%');
             }
             if(modalContent.attr('data-height') !== undefined){
                 var modalHeight = modalContent.attr('data-height').substr(0,modalContent.attr('data-height').indexOf('%')) * 1;
-                if($window.height()<768){
-                    console.log($window.height());
-                    modalHeight = modalHeight + 15;  
-                }
                 modalContent.css('height',modalHeight + '%');
             }
 
@@ -835,43 +1678,43 @@ mr = (function (mr, $, window, document){
 
         });
 
-        if(typeof mr_variant == typeof undefined){
-            $('.modal-instance').each(function(index){
-                var modalInstance = $(this);
-                var modal = modalInstance.find('.modal-container');
-                var modalContent = modal.find('.modal-content');
-                var trigger = modalInstance.find('.modal-trigger');
-                
-                // Link modal with modal-id attribute
-                
-                trigger.attr('data-modal-index',index);
-                modal.attr('data-modal-index',index);
-                
-                // Set unique id for multiple triggers
-                
-                if(typeof modal.attr('data-modal-id') !== typeof undefined){
-                    trigger.attr('data-modal-id', modal.attr('data-modal-id'));
-                }
+
+        $('.modal-instance').each(function(index){
+            var modalInstance = $(this);
+            var modal = modalInstance.find('.modal-container');
+            var modalContent = modalInstance.find('.modal-content');
+            var trigger = modalInstance.find('.modal-trigger');
             
-                // Attach the modal to the body            
-                modal = modal.detach();
-                $('body').append(modal);
-            });
-        }
+            // Link modal with modal-id attribute
+            
+            trigger.attr('data-modal-index',index);
+            modal.attr('data-modal-index',index);
+            
+            // Set unique id for multiple triggers
+            
+            if(typeof modal.attr('data-modal-id') !== typeof undefined){
+                trigger.attr('data-modal-id', modal.attr('data-modal-id'));
+            }
+            
+
+            // Attach the modal to the body            
+            modal = modal.detach();
+            mr.modals.allModalsContainer.append(modal);
+        });
+        
 
         $('.modal-trigger').on('click', function(){
 
             var modalTrigger = $(this);
-            var $body        = $('body');
             var uniqueID, targetModal;
             // Determine if the modal id is set by user or is set programatically
    
             if(typeof modalTrigger.attr('data-modal-id') !== typeof undefined){
                 uniqueID = modalTrigger.attr('data-modal-id');
-                targetModal = $body.find('.modal-container[data-modal-id="'+uniqueID+'"]');    
+                targetModal = mr.modals.allModalsContainer.find('.modal-container[data-modal-id="'+uniqueID+'"]');    
             }else{
                 uniqueID = $(this).attr('data-modal-index');
-                targetModal = $body.find('.modal-container[data-modal-index="'+uniqueID+'"]');
+                targetModal = mr.modals.allModalsContainer.find('.modal-container[data-modal-index="'+uniqueID+'"]');
             }
             
             mr.util.activateIdleSrc(targetModal, 'iframe');
@@ -882,21 +1725,20 @@ mr = (function (mr, $, window, document){
             return false;
         });
 
-        $('.modal-close').on('click', mr.modals.closeActiveModal);
+        jQuery(document).on('click', '.modal-close', mr.modals.closeActiveModal);
 
-        $(document).keyup(function(e) {
-            if (e.keyCode == 27) { // escape key maps to keycode `27`
+        jQuery(document).keyup(function(e) {
+            if (e.keyCode === 27) { // escape key maps to keycode `27`
                 mr.modals.closeActiveModal();
             }
         });
 
         $('.modal-container').on('click', function(e) { 
-            if( e.target != this ) return;
+            if( e.target !== this ) return;
             mr.modals.closeActiveModal();
         });
 
         // Trigger autoshow modals
-
         $('.modal-container[data-autoshow]').each(function(){
             var modal = $(this);
             var millisecondsDelay = modal.attr('data-autoshow')*1;
@@ -913,6 +1755,50 @@ mr = (function (mr, $, window, document){
                 mr.modals.showModal(modal, millisecondsDelay);
             }
         });
+
+        // Exit modals
+        $('.modal-container[data-show-on-exit]').each(function(){
+            var modal        = jQuery(this),
+                exitSelector = modal.attr('data-show-on-exit'),
+                delay = 0;
+
+            if(modal.attr('data-delay')){
+                delay = parseInt(modal.attr('data-delay'), 10) || 0;  
+            } 
+
+            // If a valid selector is found, attach leave event to show modal.
+            if($(exitSelector).length){
+                modal.prepend($('<i class="ti-close close-modal">'));
+                jQuery(document).on('mouseleave', exitSelector, function(){
+                    if(!$('.modal-active').length){
+                        if(typeof modal.attr('data-cookie') !== typeof undefined){
+                            if(!mr.cookies.hasItem(modal.attr('data-cookie'))){
+                                mr.modals.showModal(modal, delay);
+                            }
+                        }else{
+                            mr.modals.showModal(modal, delay);
+                        }
+                    }
+                });
+            }
+        });
+
+
+        // Autoshow modal by ID from location href
+        if(window.location.href.split('#').length === 2){
+            var modalID = window.location.href.split('#').pop();
+            if($('[data-modal-id="'+modalID+'"]').length){
+                mr.modals.closeActiveModal();
+                mr.modals.showModal($('[data-modal-id="'+modalID+'"]'));
+            }  
+        }
+
+        // Make modal scrollable
+        $(document).on('wheel mousewheel scroll','.modal-content, .modal-content .scrollable', function(evt){
+            if(evt.preventDefault){evt.preventDefault();}
+            if(evt.stopPropagation){evt.stopPropagation();}
+            this.scrollTop += (evt.originalEvent.deltaY); 
+        });
     };
     ////////////////
     //////////////// End documentReady
@@ -925,18 +1811,18 @@ mr = (function (mr, $, window, document){
         var delay = (typeof millisecondsDelay !== typeof undefined) ? (1*millisecondsDelay) : 0;
         
         setTimeout(function(){
-            modal.addClass('modal-active');
+            $(modal).addClass('modal-active');
         },delay);
     };
 
     mr.modals.closeActiveModal = function(){
-        var modal = $('body div.modal-active');
+        var modal = jQuery('body div.modal-active');
         mr.util.idleSrc(modal, 'iframe');
         mr.util.pauseVideo(modal);
 
         // If this modal requires to be closed permanently using a cookie, set the cookie now.
         if(typeof modal.attr('data-cookie') !== typeof undefined){
-            mr.cookies.setItem(modal.attr('data-cookie'), "true", Infinity);
+            mr.cookies.setItem(modal.attr('data-cookie'), "true", Infinity, '/');
         }
 
         modal.removeClass('modal-active');
@@ -949,137 +1835,6 @@ mr = (function (mr, $, window, document){
             video.play();
         }
     };
-
-    mr.components.documentReady.push(documentReady);
-    return mr;
-
-}(mr, jQuery, window, document));
-
-//////////////// Navigation
-mr = (function (mr, $, window, document){
-    "use strict";
-    
-    // The navigation object
-    mr.navigation = {};
-
-    // The overall nav element (one per page)
-    mr.navigation.nav = {};
-
-    // In case there is a bar type nav element
-    mr.navigation.bar = {};
-
-    var documentReady = function($){
-        
-        mr.navigation.nav.element = $('nav');
-        mr.navigation.bar.element = $('nav .nav-bar');
-        
-        // Check for nav element and set outerHeight variable
-        if(mr.navigation.nav.element.length){
-            mr.navigation.nav.outerHeight = mr.navigation.nav.element.outerHeight();
-        }else{
-            mr.navigation.nav.outerHeight = 0;
-        }
-        // Check for a bar type nav
-        if(mr.navigation.bar.element.length){
-            mr.navigation.bar.init();
-        }
-
-        //////////////// Mobile Menu Toggle
-        
-        $('.nav-mobile-toggle').on('click', function(){
-            $('nav').toggleClass('nav-open');
-        });
-        
-        $('.menu li').on('click', function(ev){
-            var navItem = $(this),
-                e       = ev || window.event;
-            
-            e.stopPropagation();
-            if (navItem.find('ul').length) {
-                navItem.toggleClass('active');
-            } else {
-                navItem.parents('.active').removeClass('active');
-            }
-        });
-        
-        //////////////// Mobile Menu Applets
-        
-        $('.module-applet').on('click', function(){
-            $(this).toggleClass('active');
-        });
-        
-        $('.module-applet__body').each(function(){
-            var moduleBody = $(this);
-            var farRight = moduleBody.offset().left + moduleBody.outerWidth();
-            if(farRight > $(window).width()){
-                moduleBody.addClass('pos-right');
-            }
-        });
-        
-        //////////////// Menu dropdown positioning
-
-        $('.menu > li > ul').each(function() {
-            var $window          = $(window);
-            var dropDown         = $(this);
-            var menu             = dropDown.offset();
-            var farRight         = menu.left + dropDown.outerWidth(true);
-            var windowWidth      = $window.width();
-            var windowOuterWidth = $window.outerWidth(true);
-            var multiColumn      = dropDown.hasClass('multi-column');
-
-            if (farRight > windowWidth && !multiColumn) {
-                dropDown.addClass('make-right');
-            } else if (farRight > windowWidth && multiColumn) {
-                var isOnScreen = windowWidth - menu.left;
-                var difference = windowOuterWidth - isOnScreen;
-                dropDown.css('margin-left', -(difference));
-            }
-        });
-
-    };
-
-    ///
-    ///    END DOCUMENTREADY
-    ///
-    ////////////////////////////////////
-    
-    mr.navigation.bar.init = function(){
-        // Get data-fixed-at attribute
-        var fixedAt = mr.navigation.bar.element.attr('data-fixed-at');
-        // Save mr.navigation.bar.fixedAt as a number or null if not set
-        mr.navigation.bar.fixedAt = (typeof fixedAt !== typeof undefined) ? parseInt(fixedAt.replace('px', ''), 10) : false;
-
-        // Only run scroll listeners if bar does not already have nav--fixed class
-        if(mr.navigation.bar.element.hasClass('nav--fixed')){
-            // We know this is a fixed nav bar
-            mr.navigation.bar.isFixed = true;
-        }else if (fixedAt) {
-            // If fixedAt has a value (not false) and nav bar has no ".nav--fixed" class
-            // add navigation.bar.update to scroll event cycle
-            mr.navigation.nav.element.css('min-height', mr.navigation.nav.outerHeight);
-            mr.navigation.bar.isFixed = false;
-            mr.scroll.listeners.push(mr.navigation.bar.update);
-        }
-
-
-    };
-
-    mr.navigation.bar.update = function(){
-        // If page is scrolled beyond the point where nav should be fixed
-        if( (mr.scroll.y > mr.navigation.bar.fixedAt) && !mr.navigation.bar.isFixed)
-        {
-            mr.navigation.bar.isFixed = true;
-            mr.navigation.bar.element.addClass('nav--fixed');
-        }
-
-        if( (mr.scroll.y < mr.navigation.bar.fixedAt) && mr.navigation.bar.isFixed)
-        {
-            mr.navigation.bar.isFixed = false;
-            mr.navigation.bar.element.removeClass('nav--fixed');
-        }
-    };
-
-    mr.navigation.documentReady = documentReady;        
 
     mr.components.documentReady.push(documentReady);
     return mr;
@@ -1146,11 +1901,13 @@ mr = (function (mr, $, window, document){
     		checkbox = $(this);
     		id = checkbox.attr('id');
     		label = form.find('label[for='+id+']');
+            if(!label.length){
+                label = $('<label for="'+id+'"></label>');
+            }
     		
     		checkbox.before('<div class="input-checkbox" data-id="'+id+'"></div>');
     		$('.input-checkbox[data-id="'+id+'"]').prepend(checkbox);
     		$('.input-checkbox[data-id="'+id+'"]').prepend(label);
-    		$('.input-checkbox[data-id="'+id+'"]').prepend('<div class="inner"></div>');
     	});
 
     	form.find('button[type="submit"]').each(function(){
@@ -1161,11 +1918,12 @@ mr = (function (mr, $, window, document){
             }
         });
         
-        form.find('[required]').removeAttr('required').addClass('validate-required');
+        form.find('[required]').attr('required', 'required').addClass('validate-required');
 
         form.addClass('form--active');
 
         mr.newsletters.prepareAjaxAction(form);
+
 
     });
 
@@ -1217,11 +1975,14 @@ mr = (function (mr, $, window, document){
 
     	form.find('input[type="checkbox"]').each(function(){
     		checkbox = $(this);
-    		parent = checkbox.closest('li');
+    		parent = checkbox.parent();
     		label = parent.find('label');
-    		checkbox.before('<div class="input-checkbox"><div class="inner"></div></div>');
-    		parent.find('.input-checkbox').prepend(checkbox);
-    		parent.find('.input-checkbox').prepend(label);
+            if(!label.length){
+                label = $('<label></label>');
+            }
+    		checkbox.before('<div class="input-checkbox"></div>');
+    		parent.find('.input-checkbox').append(checkbox);
+    		parent.find('.input-checkbox').append(label);
     	});
 
     	// Wrap radio elements in template code
@@ -1230,7 +1991,10 @@ mr = (function (mr, $, window, document){
     		radio = $(this);
     		parent = radio.closest('li');
     		label = parent.find('label');
-    		radio.before('<div class="input-radio"><div class="inner"></div></div>');
+            if(!label.length){
+                label = $('<label></label>');
+            }
+    		radio.before('<div class="input-radio"></div>');
     		parent.find('.input-radio').prepend(radio);
     		parent.find('.input-radio').prepend(label);
     	});
@@ -1239,7 +2003,7 @@ mr = (function (mr, $, window, document){
 
         form.find('input[type="submit"]').each(function(){
             var submit = $(this);
-            console.log('Submit class: '+submit.attr('class'));
+            
             var newButton = jQuery('<button/>').attr('type','submit').attr('class', submit.attr('class')).addClass('btn').text(submit.attr('value'));
             
             if(submit.parent().is('div.clear')){
@@ -1265,11 +2029,12 @@ mr = (function (mr, $, window, document){
             $(this).children().first().unwrap();
         });
 
-        form.find('[required]').removeAttr('required').addClass('validate-required');
+        form.find('[required]').attr('required', 'required').addClass('validate-required');
 
         form.addClass('form--active');
 
         mr.newsletters.prepareAjaxAction(form);
+
      
     
 
@@ -1289,7 +2054,7 @@ mr = (function (mr, $, window, document){
         // Alter action for a Mail Chimp-compatible ajax request url.
         if(/list-manage\.com/.test(action)){
            action = action.replace('/post?', '/post-json?') + "&c=?";
-           if(action.substr(0,2) == "//"){
+           if(action.substr(0,2) === "//"){
                action = 'http:' + action;
            }
         }
@@ -1329,7 +2094,7 @@ mr = (function (mr, $, window, document){
 
         $('.notification[data-autoshow]').each(function(){
             var notification = $(this);
-            var millisecondsDelay = notification.attr('data-autoshow') * 1;
+            var millisecondsDelay = parseInt(notification.attr('data-autoshow'),10);
 
             // If this notification has a cookie attribute, check to see if a cookie is set, and if so, don't show it.
             if(typeof notification.attr('data-cookie') !== typeof undefined){
@@ -1342,21 +2107,27 @@ mr = (function (mr, $, window, document){
         });
 
         $('[data-notification-link]:not(.notification)').on('click', function(){
-            var notificationID = $(this).attr('data-notification-link');
-            var notification = $('body').find('.notification[data-notification-link="'+notificationID+'"]');
+            var notificationID = jQuery(this).attr('data-notification-link');
+            var notification = $('.notification[data-notification-link="'+notificationID+'"]');
+            jQuery('.notification--reveal').addClass('notification--dismissed');
             notification.removeClass('notification--dismissed');
-            notification.addClass('notification--reveal');
+            mr.notifications.showNotification(notification, 0);
             return false;
         });
 
         $('.notification-close').on('click', function(){
-            var closeButton = $(this);
+            var closeButton = jQuery(this);
             // Pass the closeNotification function a reference to the close button
             mr.notifications.closeNotification(closeButton);
 
             if(closeButton.attr('href') === '#'){
                 return false;
             }
+        });
+
+        $('.notification .inner-link').on('click', function(){
+            var notificationLink = jQuery(this).closest('.notification').attr('data-notification-link');
+            mr.notifications.closeNotification(notificationLink);
         });
     
     };
@@ -1365,25 +2136,39 @@ mr = (function (mr, $, window, document){
 
     mr.notifications.showNotification = function(notification, millisecondsDelay){
         var delay = (typeof millisecondsDelay !== typeof undefined) ? (1*millisecondsDelay) : 0;
-
         setTimeout(function(){
             notification.addClass('notification--reveal');
+            notification.closest('nav').addClass('notification--reveal');
+            if(notification.find('input').length){
+                notification.find('input').first().focus();
+            }
         },delay);
+        // If notification has autohide attribute, set a timeout 
+        // for the autohide time plus the original delay time in case notification was called
+        // on page load
+        if(notification.is('[data-autohide]')){
+            var hideDelay = parseInt(notification.attr('data-autohide'),10);
+            setTimeout(function(){
+                mr.notifications.closeNotification(notification);
+            },hideDelay+delay);
+        }
     };
 
     mr.notifications.closeNotification = function(notification){
+        var $notification = jQuery(notification);
 
-        var $notification = $(notification);
-        
-        notification = $notification.is('.notification-close') ? 
+        notification = $notification.is('.notification') ? 
+                       $notification :
+                       $notification.is('.notification-close') ? 
                        $notification.closest('.notification') : 
-                       $('body').find('.notification[data-notification-link="'+notification+'"]');
-
-        notification.addClass('notification--dismissed'); 
+                       $('.notification[data-notification-link="'+notification+'"]');
+        
+        notification.addClass('notification--dismissed');
+        notification.closest('nav').removeClass('notification--reveal');
 
         // If this notification requires to be closed permanently using a cookie, set the cookie now.
         if(typeof notification.attr('data-cookie') !== typeof undefined){
-            mr.cookies.setItem(notification.attr('data-cookie'), "true", Infinity);
+            mr.cookies.setItem(notification.attr('data-cookie'), "true", Infinity, '/');
         }
     };
 
@@ -1414,7 +2199,7 @@ mr = (function (mr, $, window, document){
                 parallaxHeroImage = $('.parallax:nth-of-type(1) .background-image-holder');
 
             parallaxHeroImage.css('top', -(navHeight));
-            if(parallaxHero.outerHeight(true) == windowHeight){
+            if(parallaxHero.outerHeight(true) === windowHeight){
                 parallaxHeroImage.css('height', windowHeight + navHeight);
             }
         }
@@ -1429,226 +2214,163 @@ mr = (function (mr, $, window, document){
 
 }(mr, jQuery, window, document));
 
-//////////////// Piecharts
+//////////////// EasyPiecharts
 mr = (function (mr, $, window, document){
 	  "use strict";
-	  
-	  var documentReady = function($){
-	      jQuery.fn.easyaspie = function () {
-			
-				var	size	= parseInt(this.data('size'), 10),
-					radius	= size / 2,
-					value	= parseInt(this.data('value'), 10);
-				
-				// pie all the things!
-				if (this.length > 1){
-					this.each( function() {
-						$(this).easyaspie();
-					});
-					return this;
-				}
-				
-				// is you trying to break things?
-				if (isNaN(value)) {
-					return this;
-				}
-				
-				// set the size of this
-				this.css({
-					height: size,
-					width: size
-				}).addClass('pie-sliced');
-				
-				// make value behave
-				value = Math.min(Math.max(value, 0), 100);
 
-				// make me some svg
-				this.pie = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-				
-				// if value is 100 or higher, just use a circle
-				if (value >= 100) {
-					this.pie.slice = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-					this.pie.slice.setAttribute('r', radius);
-					this.pie.slice.setAttribute('cx', radius);
-					this.pie.slice.setAttribute('cy', radius);
-					
-				} else {
-					this.pie.slice = document.createElementNS("http://www.w3.org/2000/svg", "path");
-					
-					//calculate x,y coordinates of the point on the circle to draw the arc to. 
-					var x = Math.cos((2 * Math.PI)/(100/value));
-					var y = Math.sin((2 * Math.PI)/(100/value));
-					
-					//should the arc go the long way round?
-					var longArc = (value <= 50) ? 0 : 1;
-					
-					//d is a string that describes the path of the slice.
-					var d = "M" + radius + "," + radius + " L" + radius + "," + 0 + ", A" + radius + "," + radius + " 0 " + longArc + ",1 " + (radius + y*radius) + "," + (radius - x*radius) + " z";		
-					this.pie.slice.setAttribute('d', d);
-				}
-				
-				//add the slice to the pie.
-		        jQuery(this.pie.slice).appendTo(this.pie);
-				
-				// add the pie to this
-				jQuery(this.pie).appendTo(this);
-		        
-				return this;
+		mr.easypiecharts = {};
+		mr.easypiecharts.pies = [];
+
+		var documentReady = function($){
+
+			mr.easypiecharts.init = function(){
+
+				mr.easypiecharts.pies = [];
+            
+				$('.radial').each(function(){
+				  var pieObject  = {},
+					  currentPie = jQuery(this);
+
+					  pieObject.element = currentPie;
+					  pieObject.value = parseInt(currentPie.attr('data-value'),10);
+					  pieObject.top = currentPie.offset().top;
+					  pieObject.height = currentPie.height()/2;
+					  pieObject.active = false;
+					  mr.easypiecharts.pies.push(pieObject);
+				});
 			};
 
-			var pieCharts = $('.piechart');
+			mr.easypiecharts.activate = function(){
+				mr.easypiecharts.pies.forEach(function(pie){
+					if(Math.round((mr.scroll.y + mr.window.height)) >= Math.round(pie.top+pie.height)){
+						if(pie.active === false){
+							
+		                	pie.element.data('easyPieChart').enableAnimation();
+		                	pie.element.data('easyPieChart').update(pie.value);
+		                	pie.element.addClass('radial--active');
+		                	pie.active = true;
+						}
+		            }
+	        	});
+			};
 
-			if(pieCharts.length){
-			    pieCharts.easyaspie().addClass('active');
-			}
+		  	$('.radial').each(function(){
+		  		var chart    = jQuery(this),
+		  			value    = 0,
+		  			color    = '#000000',
+		  			time     = 2000,
+		  			pieSize  = 110,
+		  			barWidth = 3;
 
-		    $('.barchart').each(function(){
-		    	var chart = $(this);
-		    	var bar = chart.find('.barchart__progress');
-		    	var barWidth = chart.attr('data-value')*1 + '%';
-		    	bar.attr('data-value', barWidth);
-		    	if(!chart.hasClass('barchart--vertical')){
-		    		bar.css('width', barWidth);
-		    	}else{
-		    		bar.css('height', barWidth);
-		    	}
+		  		if(typeof chart.attr('data-timing') !== typeof undefined){
+		  			time = chart.attr('data-timing')*1;
+		  		}
+		  		if(typeof chart.attr('data-color') !== typeof undefined){
+		  			color = chart.attr('data-color');
+		  		}
+		  		if(typeof chart.attr('data-size') !== typeof undefined){
+		  			pieSize = chart.attr('data-size');
+		  		}
+		  		if(typeof chart.attr('data-bar-width') !== typeof undefined){
+		  			barWidth = chart.attr('data-bar-width');
+		  		}
+		  		chart.css('height',pieSize).css('width',pieSize);
 
-		    });
+		  		chart.easyPieChart({
+		  			animate: ({duration: time, enabled: true}),
+		  			barColor: color,
+		  			scaleColor: false,
+		  			size: pieSize,
+		  			lineWidth: barWidth
+		  		});
+		  		chart.data('easyPieChart').update(0);
+		  	});
+
+		  	if($('.radial').length){
+		  		mr.easypiecharts.init();
+		  		mr.easypiecharts.activate();
+		  		mr.scroll.listeners.push(mr.easypiecharts.activate);
+		  	}
+
 	  };
 
-	  mr.piecharts = {
-	      documentReady : documentReady        
-	  };
+	  mr.easypiecharts.documentReady = documentReady;
 
-	  mr.components.documentReady.push(documentReady);
+	  mr.components.documentReadyDeferred.push(documentReady);
 	  return mr;
 
 }(mr, jQuery, window, document));
 
-//////////////// Scroll Reveal
+//////////////// Flickity
 mr = (function (mr, $, window, document){
     "use strict";
     
-    var documentReady = function($){
-        
-        var $body = $('body');
-        if($('body[data-reveal-selectors]').length){
-            window.sr = ScrollReveal();
-        	var selectors = $body.attr('data-reveal-selectors');
-
-        	// Gather scroll reveal options
-        	var revealTiming = 1000;
-        	if($('body[data-reveal-timing]').length){
-        		revealTiming = $body.attr('data-reveal-timing');
-        	}
-
-        	// Initialize scroll reveal
-        	window.sr.reveal(''+selectors+'', { viewFactor: 0.1, duration: ''+revealTiming+'', scale: 1, mobile: false });
-
-        }
-
-    };
-
-    mr.scrollreveal = {
-        documentReady : documentReady
-    };
-
-    mr.components.documentReady.push(documentReady);
-    return mr;
-
-}(mr, jQuery, window, document));
-
-//////////////// Sliders Owl
-mr = (function (mr, $, window, document){
-    "use strict";
-    
-    mr.slidersOwl = {};
+    mr.sliders = {};
+    mr.sliders.draggable = true;
 
     var documentReady = function($){
-
-        var sliders = [];
-
-        $('.slider').each(function(){
-            var candidate = $(this);
-
-            if(candidate.find('ul.slides').length){
-                return true;    
-            }else{
-                var children = [];
-                var childCount = candidate.find('>*').length;            
-                candidate.children().each(function(index){
-                    children.push($(this).wrap('<li>').parent());
-                });
-                $('<ul class="slides"></ul>').append(children).appendTo(candidate);
-            }
-        });
 
         $('.slider').each(function(index){
             
             var slider = $(this);
-            var sliderInitializer = $(this).find('ul.slides');
-            var items = 1;
+            var sliderInitializer = slider.find('ul.slides');
+            sliderInitializer.find('>li').addClass('slide');
+            var childnum = sliderInitializer.find('li').length;
             var arrows = false;
             var paging = false;
             var timing = 7000;
-            var loop = false;
             var autoplay = true;
-            if(slider.attr('data-arrows') == 'true'){
+            var draggable = mr.sliders.draggable;
+            if(slider.attr('data-arrows') === 'true'){
                 arrows = true;
             }else{
                 arrows = false;
             }
-            if(slider.attr('data-autoplay') == 'false'){
+            if(slider.attr('data-autoplay') === 'false'){
                 autoplay = false;
             }else{
                 autoplay = true;
             }
-            if(slider.attr('data-paging') == 'true' && sliderInitializer.find('li').length > 1){
+            if(slider.attr('data-paging') === 'true' && sliderInitializer.find('li').length > 1){
                 paging = true;
             }else{
                 paging = false;
             }
             if(slider.attr('data-timing')){
-                timing = slider.attr('data-timing');
+                timing = slider.attr('data-timing')*1;
             }
-            if(slider.attr('data-items')){
-                items = slider.attr('data-items');
+            // Set data attribute to inidicate the number of children in the slider
+            slider.attr('data-children',childnum);
+
+            if(childnum < 2){
+                draggable = false;
             }
-            if(sliderInitializer.find('li').length > 1){
-                loop = true;
-            }
-            sliders.push(sliderInitializer);
-            sliders[index].owlCarousel({
-                nav: arrows,
-                dots: paging,
-                dotsSpeed: 500,
-                navSpeed: 500,
-                items: items,
-                autoplay: autoplay,
-                autoplayTimeout: timing,
-                navText : false,
-                loop: loop,
-                mouseDrag: false,
-                responsive:{
-                    0:{
-                        items: 1
-                    },
-                    768:{
-                        items: items
-                    }
-                }
+
+            $(sliderInitializer).flickity({
+                cellSelector: '.slide',
+                cellAlign: 'left',
+                wrapAround: true,
+                pageDots: paging,
+                prevNextButtons: arrows,
+                autoPlay: timing,
+                draggable: draggable,
+                imagesLoaded: true
             });
 
-
+            $(sliderInitializer).on( 'scroll.flickity', function( event, progress ) {
+              if(slider.find('.is-selected').hasClass('controls--dark')){
+                slider.addClass('controls--dark');
+              }else{
+                slider.removeClass('controls--dark'); 
+              }
+            });
         });
-
-        mr.slidersOwl.sliders = sliders;
-      
+        
     };
 
-    mr.slidersOwl.documentReady = documentReady;
+    mr.sliders.documentReady = documentReady;
 
-    mr.components.documentReady.push(documentReady);
+    mr.components.documentReadyDeferred.push(documentReady);
     return mr;
 
 }(mr, jQuery, window, document));
@@ -1657,18 +2379,69 @@ mr = (function (mr, $, window, document){
 mr = (function (mr, $, window, document){
     "use strict";
     
+    mr.smoothscroll = {};
+    mr.smoothscroll.sections = [];
+    
+    mr.smoothscroll.init = function(){
+        mr.smoothscroll.sections = [];
+
+       
+
+        $('a.inner-link').each(function(){
+            var sectionObject = {},
+                link          = $(this),
+                href          = link.attr('href'),
+                validLink     = new RegExp('^#[^\r\n\t\f\v\#\.]+$','gm');
+                            
+            if(validLink.test(href)){
+                
+                if($('section'+href).length){
+
+                    sectionObject.id     = href;
+                    sectionObject.top = Math.round($(href).offset().top);
+                    sectionObject.height = Math.round($(href).outerHeight());
+                    sectionObject.link   = link.get(0);
+                    sectionObject.active = false;
+
+                    mr.smoothscroll.sections.push(sectionObject);
+                }
+            }
+        });
+
+        mr.smoothscroll.highlight();
+    };
+
+    mr.smoothscroll.highlight = function(){
+        mr.smoothscroll.sections.forEach(function(section){
+            if(mr.scroll.y >= section.top && mr.scroll.y < (section.top + section.height)){
+                if(section.active === false){
+                    section.link.classList.add("inner-link--active");
+                    section.active = true;
+                }
+            }else{
+                section.link.classList.remove("inner-link--active");
+                section.active = false;
+            }
+        });
+    };
+
+    mr.scroll.listeners.push(mr.smoothscroll.highlight);
+
     var documentReady = function($){
         // Smooth scroll to inner links
         var innerLinks = $('a.inner-link');
 
         if(innerLinks.length){
-            innerLinks.each(function(){
-                var link = $(this);
-                var href = link.attr('href');
+            innerLinks.each(function(index){
+                var link          = $(this),
+                    href          = link.attr('href');
                 if(href.charAt(0) !== "#"){
                     link.removeClass('inner-link');
                 }
             });
+
+            mr.smoothscroll.init();
+            $(window).on('resize', mr.smoothscroll.init);
 
             var offset = 0;
             if($('body[data-smooth-scroll-offset]').length){
@@ -1676,18 +2449,20 @@ mr = (function (mr, $, window, document){
                 offset = offset*1;
             }
             
-            innerLinks.smoothScroll({
-              offset: offset,
-              speed: 800
+            smoothScroll.init({
+                selector: '.inner-link',
+                selectorHeader: null,
+                speed: 750,
+                easing: 'easeInOutCubic',
+                offset: offset
             });
         }
     };
 
-    mr.smoothscroll = {
-        documentReady : documentReady        
-    };
+    mr.smoothscroll.documentReady = documentReady;
 
     mr.components.documentReady.push(documentReady);
+    mr.components.windowLoad.push(mr.smoothscroll.init);
     return mr;
 
 }(mr, jQuery, window, document));
@@ -1695,35 +2470,131 @@ mr = (function (mr, $, window, document){
 //////////////// Tabs
 mr = (function (mr, $, window, document){
     "use strict";
+
+    mr.tabs = {};
     
     var documentReady = function($){
         $('.tabs').each(function(){
             var tabs = $(this);
             tabs.after('<ul class="tabs-content">');
             tabs.find('li').each(function(){
-                var currentTab = $(this);
-                var tabContent = currentTab.find('.tab__content').wrap('<li></li>').parent();
-                tabContent.detach();
-                currentTab.closest('.tabs-container').find('.tabs-content').append(tabContent);
+                var currentTab      = $(this),
+                    tabContent      = currentTab.find('.tab__content').wrap('<li></li>').parent(),
+                    tabContentClone = tabContent.clone(true,true);
+                tabContent.remove();
+                currentTab.closest('.tabs-container').find('.tabs-content').append(tabContentClone);
             });
         });
         
-        $('.tabs li').on('click', function(){
-            var clickedTab = $(this);
-            var tabContainer = clickedTab.closest('.tabs-container');
-            var activeIndex = (clickedTab.index()*1)+(1);
-            
-            tabContainer.find('> .tabs > li').removeClass('active');
-            tabContainer.find('> .tabs-content > li').removeClass('active');
-            
-            clickedTab.addClass('active');
-            tabContainer.find('> .tabs-content > li:nth-of-type('+activeIndex+')').addClass('active');
+        $('.tabs > li').on('click', function(){
+            var clickedTab = $(this), hash;
+            mr.tabs.activateTab(clickedTab);
+
+            // Update the URL bar if the currently clicked tab has an ID
+            if(clickedTab.is('[id]')){
+                // Create the hash from the tab's ID
+                hash = '#'+ clickedTab.attr('id');
+                // Check we are in a newish browser with the history API
+                if(history.pushState) {
+                    history.pushState(null, null, hash);
+                }
+                else {
+                    location.hash = hash;
+                }
+            }
         });
-        
-        $('.tabs li.active').trigger('click');
+
+        $('.tabs li.active').each(function(){
+            mr.tabs.activateTab(this);
+        });
+
+        if(window.location.hash !== ''){
+            mr.tabs.activateTabById(window.location.hash);
+        }
+
+        $('a[href^="#"]').on('click', function(){
+            mr.tabs.activateTabById($(this).attr('href'));
+        });
+
     };
 
-    mr.tabs = {
+    mr.tabs.activateTab = function(tab){
+        var clickedTab    = $(tab),
+            tabContainer  = clickedTab.closest('.tabs-container'),
+            activeIndex   = (clickedTab.index()*1)+(1),
+            activeContent = tabContainer.find('> .tabs-content > li:nth-of-type('+activeIndex+')'),
+            openEvent     = document.createEvent('Event'),
+            iframe, radial;
+
+            openEvent.initEvent('tabOpened.tabs.mr', true, true);
+
+
+        tabContainer.find('> .tabs > li').removeClass('active');
+        tabContainer.find('> .tabs-content > li').removeClass('active');
+        
+        clickedTab.addClass('active').trigger('tabOpened.tabs.mr').get(0).dispatchEvent(openEvent);
+        activeContent.addClass('active');
+
+        
+
+        // If there is an <iframe> element in the tab, reload its content when the tab is made active.
+        iframe = activeContent.find('iframe');
+        if(iframe.length){
+            iframe.attr('src', iframe.attr('src'));
+        }
+    };
+
+
+
+    mr.tabs.activateTabById = function(id){
+        if(id !== '' && id !== '#'){
+            $('.tabs > li#'+id.replace('#', '')).click();
+        }
+    };
+
+    mr.tabs.documentReady = documentReady;
+    mr.components.documentReady.push(documentReady);
+    return mr;
+
+}(mr, jQuery, window, document));
+
+//////////////// Toggle Class
+mr = (function (mr, $, window, document){
+    "use strict";
+    
+    var documentReady = function($){
+        $('[data-toggle-class]').each(function(){
+        	var element = $(this),
+                data    = element.attr('data-toggle-class').split("|");
+        		
+
+            $(data).each(function(){
+                var candidate     = element,
+                    dataArray     = [],
+            	    toggleClass   = '',
+            	    toggleElement = '',
+                    dataArray = this.split(";");
+
+            	if(dataArray.length === 2){
+            		toggleElement = dataArray[0];
+            		toggleClass   = dataArray[1];
+            		$(candidate).on('click',function(){
+                        if(!candidate.hasClass('toggled-class')){
+                            candidate.toggleClass('toggled-class');
+                        }else{
+                            candidate.removeClass('toggled-class');
+                        }
+            			$(toggleElement).toggleClass(toggleClass);
+            			return false;
+            		});
+            	}else{
+            		console.log('Error in [data-toggle-class] attribute. This attribute accepts an element, or comma separated elements terminated witha ";" followed by a class name to toggle');
+            	}
+            });
+        });
+    };
+
+    mr.toggleClass = {
         documentReady : documentReady        
     };
 
@@ -1732,28 +2603,28 @@ mr = (function (mr, $, window, document){
 
 }(mr, jQuery, window, document));
 
-//////////////// Transitions
+//////////////// Typed Headline Effect
 mr = (function (mr, $, window, document){
     "use strict";
     
     var documentReady = function($){
-        $('a:not([href^="#"]):not([href^="tel"]):not([href^="mailto"]):not([data-lightbox]):not([href=""]):not([target="_blank"])').on('click', function(){
-            $('[class*="transition--"]').removeClass('transition--active');
-        });   
+        $('.typed-text').each(function(){
+            var text = $(this);
+            var strings = text.attr("data-typed-strings") ? text.attr("data-typed-strings").split(",") : [];
+            $(text).typed({
+                strings: strings,
+                typeSpeed: 100,
+                loop: true,
+                showCursor: false
+            });
+        });
     };
 
-    var windowLoad = function(){
-        $('[class*="transition--"]').addClass('transition--active');
-        $('.loader').addClass('loader--fade');
-    };
-
-    mr.transitions = {
-        documentReady : documentReady,
-        windowLoad : windowLoad        
+    mr.typed = {
+        documentReady : documentReady        
     };
 
     mr.components.documentReady.push(documentReady);
-    mr.components.windowLoad.push(windowLoad);
     return mr;
 
 }(mr, jQuery, window, document));
@@ -1766,11 +2637,10 @@ mr = (function (mr, $, window, document){
         $('.tweets-feed').each(function(index) {
             $(this).attr('id', 'tweets-' + index);
         }).each(function(index) {
-           
+            var element = $('#tweets-' + index);
             var TweetConfig = {
-               "id": $('#tweets-' + index).attr('data-widget-id'),
                "domId": '',
-               "maxTweets": $('#tweets-' + index).attr('data-amount'),
+               "maxTweets": element.attr('data-amount'),
                "enableLinks": true,
                "showUser": true,
                "showTime": true,
@@ -1778,10 +2648,22 @@ mr = (function (mr, $, window, document){
                "showRetweet": false,
                "customCallback": handleTweets
             };
+
+            if(typeof element.attr('data-widget-id') !== typeof undefined){
+                TweetConfig.id = element.attr('data-widget-id');
+            }else if(typeof element.attr('data-feed-name') !== typeof undefined && element.attr('data-feed-name') !== ""){
+                TweetConfig.profile = {"screenName": element.attr('data-feed-name').replace('@', '')};
+            }else{
+                TweetConfig.profile = {"screenName": 'twitter'};
+            }
+
+            if(element.closest('.twitter-feed--slider').length){
+                element.addClass('slider');
+            }
+
             function handleTweets(tweets) {
                 var x = tweets.length;
                 var n = 0;
-                var element = $('#tweets-' + index);
                 var html = '<ul class="slides">';
                 while (n < x) {
                     html += '<li>' + tweets[n] + '</li>';
@@ -1791,18 +2673,8 @@ mr = (function (mr, $, window, document){
                 element.html(html);
                 
                 // Initialize twitter feed slider
-                if(element.closest('.twitter-feed--slider').length){
-                    
-                    var slider = element.find('ul.slides');
-                    slider.owlCarousel({
-                        nav: false,
-                        dots: false,
-                        items: 1,
-                        autoplay: true,
-                        autoplayTiming: 5000,
-                        center: true,
-                        responsive: false
-                    });
+                if(element.closest('.slider').length){
+                    mr.sliders.documentReady(mr.setContext());
                      
                     return html;
                 }
@@ -1875,6 +2747,34 @@ mr = (function (mr, $, window, document){
 	  };
 
 	  mr.video = {
+	      documentReady : documentReady        
+	  };
+
+	  mr.components.documentReady.push(documentReady);
+	  return mr;
+
+}(mr, jQuery, window, document));
+
+//////////////// Wizard
+mr = (function (mr, $, window, document){
+    "use strict";
+    
+	  var documentReady = function($){
+
+		$('.wizard').each(function(){
+			var wizard = jQuery(this);
+			wizard.steps({
+				headerTag: "h5",
+				bodyTag: "section",
+				transitionEffect: "slideLeft",
+				autoFocus: true
+			});
+			wizard.addClass('active');
+		});
+			
+	  };
+
+	  mr.wizard = {
 	      documentReady : documentReady        
 	  };
 

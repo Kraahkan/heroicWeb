@@ -27,8 +27,13 @@ $recipientName              = 'John Doe';             // REQUIRED value.
 $emailSubject               = 'A message from Your Website'; // REQUIRED value. Subject of the email that the recipient will see
 $websiteName                = 'Your Website';                // REQUIRED value. This is used when a name or email is not collected from the website form
 
-$timeZone					= 'Australia/Melbourne';         // OPTIONAL, but some servers require this to be set. 
+$timeZone                   = 'Australia/Melbourne';         // OPTIONAL, but some servers require this to be set. 
                                                              // See a list of all supported timezones at: http://php.net/manual/en/timezones.php
+
+// Google reCAPTCHA
+$recaptchaSecretKey         = '18cb38cwucb73vo708r6vgshjcbwbfbcvueucbwg';
+$recaptchaErrorMessage      = 'There was a problem verifying the Google reCaptcha.  Please try again.';
+
  /*----------------------------------------------------------------------------*\
 |*  You do not need to edit anything below this line, the rest is automatic.    *|
  \*============================================================================*/
